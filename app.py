@@ -12,7 +12,7 @@ from docx.shared import Inches
 from docx.enum.section import WD_ORIENT
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app/login"}})
+CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app"}})
 
 # --- Configuration and Helper functions ---
 DB_FILE = 'contracts.db'
