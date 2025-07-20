@@ -1,2 +1,0 @@
-# backend
-Backend for ONGC
