@@ -169,7 +169,7 @@ def do_setup():
             infer_column_metadata(original_column_names)
 
 
-users = {"admin": "password"}
+users = {"Infocom-Sivasagar": "223010007007"}
 
 @app.route('/api/login', methods=['POST'])
 def login():
