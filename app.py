@@ -29,7 +29,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 # --- Configuration and Global Variables ---
 app = Flask(__name__)
 # Using a specific CORS policy for production security. Change to "*" for local development.
-CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app/"}})
+CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app"}})
 
 DB_FILE = 'contracts.db'
 EXCEL_FILE = 'Contract Details.xlsx'
