@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import math
 import threading
-from flask import Flask, request, jsonify, send_file, make_response
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import io
@@ -22,24 +22,18 @@ UPLOAD_FOLDER = '.'
 ALLOWED_EXTENSIONS = {'xlsx'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 file_lock = threading.Lock()
-original_column_names = []
+original_column_names = [] # Stores the original column names from the Excel file
 
-REQUIRED_HEADERS = [
-    'SL No', 'Name of Contract', 'Name of Contractor', 'Brief Scope of Contract', 
-    'Contract No', 'DISHA File No', 'LOA No', 'LOA Date', 'PBG Amount (₹)', 
-    'PBG Submission Date', 'PBG Validity Date', 'Security Deposit Amount (₹)', 
-    'Security Deposit Submission Date', 'Security Deposit Release Date', 
-    'Date of Commissioning', 'Warranty Duration (Yr)', 'Warranty End Date', 
-    'AMC Duration (Yr)', 'AMC Start Date', 'AMC End Date', 
-    'AMC Charges for Entire Duration (₹)', 'Quarterly AMC Payment Status', 
-    'Yearly Outflow as per OLA (₹)', 'Post Contract Issues', 'Remarks'
-]
-
+# NEW: Global variable to store inferred metadata (headers and fieldTypes)
 column_metadata = {
     "headers": [],
     "fieldTypes": {
-        "range": [], "date": [], "yesNo": [], "number": [], 
-        "yearDropdown": [], "text": []
+        "range": [],
+        "date": [],
+        "yesNo": [],
+        "number": [],
+        "yearDropdown": [],
+        "text": []
     }
 }
 
@@ -48,28 +42,39 @@ def allowed_file(filename):
 
 def get_db_connection():
     conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
+    conn.row_factory = sqlite3.Row # This allows accessing columns by name
     return conn
 
 def sanitize_column_name(col_name):
+    # Replace non-alphanumeric (except space) with nothing, then spaces with underscores
     return ''.join(e for e in col_name if e.isalnum() or e.isspace()).strip().replace(' ', '_')
 
+# NEW: Function to infer column types and populate metadata
 def infer_column_metadata(columns):
     global column_metadata
     
     inferred_field_types = {
-        "range": [], "date": [], "yesNo": [], "number": [], 
-        "yearDropdown": [], "text": []
+        "range": [],
+        "date": [],
+        "yesNo": [],
+        "number": [],
+        "yearDropdown": [],
+        "text": []
     }
 
+    # Define the exact headers for each type as provided
     field_type_map = {
         "range": ["Contract Value (₹)", "Invoice Submitted & Amount Claimed (₹)", "Amount Passed (₹)", "Deduction (₹)", "PBG Amount (₹)", "Security Deposit Amount (₹)", "AMC Charges for Entire Duration (₹)", "Yearly Outflow as per OLA (₹)"],
-        "date": ["Date of Commissioning", "Warranty End Date", "AMC Start Date", "AMC End Date", "LOA Date", "PBG Submission Date", "PBG Validity Date", "Security Deposit Submission Date", "Security Deposit Release Date"],
+        "date": ["Date of Commissioning", "Warranty End Date", "AMC Start Date", "AMC End Date"],
         "yesNo": ["Quarterly AMC Payment Status", "Post Contract Issues"],
         "number": ["SL No"],
         "yearDropdown": ["Warranty Duration (Yr)", "AMC Duration (Yr)"]
     }
 
+    # Flatten the map to easily check if a column has a predefined type
+    predefined_columns = {col for cat in field_type_map.values() for col in cat}
+
+    # Assign types based on the provided lists
     for col in columns:
         found = False
         for type_name, header_list in field_type_map.items():
@@ -77,6 +82,7 @@ def infer_column_metadata(columns):
                 inferred_field_types[type_name].append(col)
                 found = True
                 break
+        # Any column not in the predefined lists is considered 'text'
         if not found:
             inferred_field_types["text"].append(col)
             
@@ -84,19 +90,26 @@ def infer_column_metadata(columns):
     column_metadata["fieldTypes"] = inferred_field_types
     print("Inferred Column Metadata based on new rules:", column_metadata)
 
+
+# --- Database Setup, Sync ---
 def export_db_to_excel():
     print("Attempting to sync database to Excel file...")
     conn = get_db_connection()
     try:
+        # Fetch all data, ordered by SL_No to maintain sequence
         db_df = pd.read_sql_query(f"SELECT * FROM {TABLE_NAME} ORDER BY CAST({sanitize_column_name('SL No')} AS INTEGER)", conn)
         
         if not original_column_names:
             print("Warning: original_column_names is empty. Cannot sync to Excel with original headers.")
             return
 
+        # Create a rename map from sanitized to original names
         rename_map = {sanitize_column_name(col): col for col in original_column_names}
+        
+        # Rename columns in the DataFrame
         db_df_renamed = db_df.rename(columns=rename_map).copy() 
         
+        # Ensure only columns that were originally present and are now in the dataframe are included
         final_columns = [col for col in original_column_names if col in db_df_renamed.columns]
         db_df_final = db_df_renamed[final_columns]
 
@@ -119,6 +132,7 @@ def setup_database():
     df = pd.read_excel(EXCEL_FILE, dtype=str).fillna('')
     original_column_names = df.columns.tolist()
     
+    # Infer and store metadata after reading original columns
     infer_column_metadata(original_column_names)
 
     df.columns = [sanitize_column_name(col) for col in original_column_names]
@@ -154,8 +168,6 @@ def do_setup():
             original_column_names = temp_df.columns.tolist()
             infer_column_metadata(original_column_names)
 
-
-# --- API Routes ---
 
 users = {"Infocom-Sivasagar": "223010007007"}
 
@@ -206,24 +218,34 @@ def get_contracts_serverside():
                 if to_date: where_clauses.append(f"date({sanitized_filter_field}) <= date(?)"); params.append(to_date)
     where_statement = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
+    # --- CORRECTED SORTING LOGIC ---
+    # Default order by clause. This is the fallback for any non-sortable field.
     order_by_clause = f"ORDER BY CAST({sanitize_column_name('SL No')} AS REAL) ASC"
 
+    # Map sanitized names back to original names to check against metadata types.
     sanitized_to_original_map = {sanitize_column_name(col): col for col in original_column_names}
     
     sanitized_sort_field = sanitize_column_name(sort_field)
     original_field_name = sanitized_to_original_map.get(sanitized_sort_field)
 
+    # Check if the field is valid and determine its type from metadata.
     if sanitized_sort_field in allowed_columns and original_field_name:
         field_types = column_metadata['fieldTypes']
 
+        # Rule 1: Numeric sort for 'range', 'number', and 'yearDropdown' (duration) types.
         if (original_field_name in field_types.get('range', []) or
             original_field_name in field_types.get('number', []) or
             original_field_name in field_types.get('yearDropdown', [])):
             order_by_clause = f"ORDER BY CAST({sanitized_sort_field} AS REAL) {sort_direction}"
+        # Rule 2: Date-aware sort for 'date' types.
         elif original_field_name in field_types.get('date', []):
             order_by_clause = f"ORDER BY date({sanitized_sort_field}) {sort_direction}"
+        # Rule 3: Alphabetical sort for 'yesNo' types.
         elif original_field_name in field_types.get('yesNo', []):
             order_by_clause = f"ORDER BY {sanitized_sort_field} COLLATE NOCASE {sort_direction}"
+        # Note: 'text' fields are intentionally unsortable.
+        # If requested, the default 'ORDER BY SL No' clause is used.
+    # --- END OF CORRECTION ---
 
     select_clause = "SELECT rowid as id, " + ", ".join(allowed_columns)
 
@@ -249,8 +271,11 @@ def get_contracts_serverside():
     conn.close()
     
     response_data = {
-        "data": contracts, "totalPages": total_pages, "currentPage": page,
-        "headers": column_metadata["headers"], "fieldTypes": column_metadata["fieldTypes"]
+        "data": contracts,
+        "totalPages": total_pages,
+        "currentPage": page,
+        "headers": column_metadata["headers"],
+        "fieldTypes": column_metadata["fieldTypes"]
     }
     
     if not is_paginated:
@@ -274,6 +299,7 @@ def export_data():
     max_range = request.args.get('maxRange')
     from_date = request.args.get('fromDate')
     to_date = request.args.get('toDate')
+    selected_fields_str = request.args.get('selectedFields', '')
 
     where_clauses = []
     params = []
@@ -291,6 +317,7 @@ def export_data():
                 if to_date: where_clauses.append(f"date({sanitized_filter_field}) <= date(?)"); params.append(to_date)
     where_statement = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
 
+    # --- CORRECTED SORTING LOGIC ---
     order_by_clause = f"ORDER BY CAST({sanitize_column_name('SL No')} AS REAL) ASC"
     sanitized_to_original_map = {sanitize_column_name(col): col for col in original_column_names}
     sanitized_sort_field = sanitize_column_name(sort_field)
@@ -306,25 +333,36 @@ def export_data():
             order_by_clause = f"ORDER BY date({sanitized_sort_field}) {sort_direction}"
         elif original_field_name in field_types.get('yesNo', []):
             order_by_clause = f"ORDER BY {sanitized_sort_field} COLLATE NOCASE {sort_direction}"
+    # --- END OF CORRECTION ---
 
-    select_clause = "SELECT " + ", ".join(allowed_columns)
+    selected_fields = selected_fields_str.split(',')
+    sanitized_selected_fields = [sanitize_column_name(f) for f in selected_fields]
+    valid_selected_fields = [f for f in sanitized_selected_fields if f in allowed_columns]
+    if not valid_selected_fields: valid_selected_fields = ['*']
+    select_clause = "SELECT " + ", ".join(valid_selected_fields)
+
     query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause}"
     cursor.execute(query, tuple(params))
     
     db_df = pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description])
     conn.close()
+
+    sanitized_sl_no_col = sanitize_column_name('SL No')
+    if sanitized_sl_no_col in db_df.columns:
+        db_df[sanitized_sl_no_col] = range(1, len(db_df) + 1)
     
     db_df.rename(columns=sanitized_to_original_map, inplace=True)
     
-    # MODIFIED: This ensures the export always contains all required columns in the correct order
-    db_df = db_df[REQUIRED_HEADERS]
+    final_columns = [col for col in selected_fields if col in db_df.columns]
+    db_df = db_df[final_columns]
 
     output = io.BytesIO()
     
     if format_type == 'xlsx':
+        # (Excel export formatting remains the same)
         writer = pd.ExcelWriter(output, engine='xlsxwriter')
         db_df.to_excel(writer, index=False, sheet_name='Contracts')
-        workbook  = writer.book
+        workbook   = writer.book
         worksheet = writer.sheets['Contracts']
         header_format = workbook.add_format({'bold': True, 'text_wrap': False, 'valign': 'top', 'fg_color': '#D7E4BC', 'border': 1})
         for col_num, value in enumerate(db_df.columns.values):
@@ -340,6 +378,7 @@ def export_data():
         mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         file_extension = 'xlsx'
     elif format_type == 'docx':
+        # (Word export formatting remains the same)
         document = Document()
         section = document.sections[0]
         section.orientation = WD_ORIENT.LANDSCAPE
@@ -361,7 +400,7 @@ def export_data():
         document.save(output)
         mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
         file_extension = 'docx'
-    else:
+    else: # Default to CSV
         db_df.to_csv(output, index=False)
         mimetype = 'text/csv'
         file_extension = 'csv'
@@ -371,48 +410,21 @@ def export_data():
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
-    if 'file' not in request.files:
-        return make_response(jsonify({"error": "No file part in the request."}), 400)
-    
+    if 'file' not in request.files: return jsonify({"error": "No file part"}), 400
     file = request.files['file']
+    if file.filename == '': return jsonify({"error": "No selected file"}), 400
+    if file and allowed_file(file.filename):
+        try:
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], EXCEL_FILE)
+            file.save(filepath)
+            with file_lock:
+                if os.path.exists(DB_FILE): os.remove(DB_FILE)
+            setup_database()
+            return jsonify({"message": "File uploaded and database re-initialized successfully."}), 200
+        except Exception as e: return jsonify({"error": str(e)}), 500
+    return jsonify({"error": "File type not allowed"}), 400
 
-    if file.filename == '':
-        return make_response(jsonify({"error": "No file selected."}), 400)
-
-    if not file or not allowed_file(file.filename):
-        return make_response(jsonify({"error": "Invalid file type. Please upload a .xlsx file."}), 400)
-
-    try:
-        df = pd.read_excel(file)
-        
-        required_headers_set = set(REQUIRED_HEADERS)
-        uploaded_headers_set = set(df.columns)
-
-        if uploaded_headers_set != required_headers_set:
-            missing = list(required_headers_set - uploaded_headers_set)
-            extra = list(uploaded_headers_set - uploaded_headers_set)
-            error_message = "The uploaded file's headers do not match the required template."
-            if missing:
-                error_message += f" Missing columns: {', '.join(missing)}."
-            if extra:
-                error_message += f" Extra columns found: {', '.join(extra)}."
-            return make_response(jsonify({"error": error_message}), 400)
-        
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], EXCEL_FILE)
-        file.seek(0) 
-        file.save(filepath)
-        
-        with file_lock:
-            if os.path.exists(DB_FILE):
-                os.remove(DB_FILE)
-        setup_database()
-        
-        return jsonify({"message": "File validated and database re-initialized successfully."}), 200
-
-    except Exception as e:
-        return make_response(jsonify({"error": f"An error occurred: {str(e)}"}), 500)
-
-# --- CRUD Operations ---
+# (The rest of the CRUD operations remain the same)
 @app.route('/api/contracts', methods=['POST'])
 def add_contract():
     new_data = request.get_json()
