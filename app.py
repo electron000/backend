@@ -3,7 +3,7 @@ import pandas as pd
 import os
 import math
 import threading
-from flask import Flask, request, jsonify, send_file, make_response # MODIFIED: Added make_response
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import io
@@ -24,7 +24,6 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 file_lock = threading.Lock()
 original_column_names = []
 
-# NEW: Predefined list of the 25 required headers for validation
 REQUIRED_HEADERS = [
     'SL No', 'Name of Contract', 'Name of Contractor', 'Brief Scope of Contract', 
     'Contract No', 'DISHA File No', 'LOA No', 'LOA Date', 'PBG Amount (₹)', 
@@ -85,7 +84,6 @@ def infer_column_metadata(columns):
     column_metadata["fieldTypes"] = inferred_field_types
     print("Inferred Column Metadata based on new rules:", column_metadata)
 
-# --- Database Setup, Sync ---
 def export_db_to_excel():
     print("Attempting to sync database to Excel file...")
     conn = get_db_connection()
@@ -174,7 +172,6 @@ def login():
         
 @app.route('/api/contracts', methods=['GET'])
 def get_contracts_serverside():
-    # This function remains the same
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(f"PRAGMA table_info({TABLE_NAME})")
@@ -263,7 +260,6 @@ def get_contracts_serverside():
 
 @app.route('/api/export', methods=['GET'])
 def export_data():
-    # This function remains the same
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute(f"PRAGMA table_info({TABLE_NAME})")
@@ -278,7 +274,6 @@ def export_data():
     max_range = request.args.get('maxRange')
     from_date = request.args.get('fromDate')
     to_date = request.args.get('toDate')
-    selected_fields_str = request.args.get('selectedFields', '')
 
     where_clauses = []
     params = []
@@ -312,26 +307,17 @@ def export_data():
         elif original_field_name in field_types.get('yesNo', []):
             order_by_clause = f"ORDER BY {sanitized_sort_field} COLLATE NOCASE {sort_direction}"
 
-    selected_fields = selected_fields_str.split(',')
-    sanitized_selected_fields = [sanitize_column_name(f) for f in selected_fields]
-    valid_selected_fields = [f for f in sanitized_selected_fields if f in allowed_columns]
-    if not valid_selected_fields: valid_selected_fields = ['*']
-    select_clause = "SELECT " + ", ".join(valid_selected_fields)
-
+    select_clause = "SELECT " + ", ".join(allowed_columns)
     query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause}"
     cursor.execute(query, tuple(params))
     
     db_df = pd.DataFrame(cursor.fetchall(), columns=[desc[0] for desc in cursor.description])
     conn.close()
-
-    sanitized_sl_no_col = sanitize_column_name('SL No')
-    if sanitized_sl_no_col in db_df.columns:
-        db_df[sanitized_sl_no_col] = range(1, len(db_df) + 1)
     
     db_df.rename(columns=sanitized_to_original_map, inplace=True)
     
-    final_columns = [col for col in selected_fields if col in db_df.columns]
-    db_df = db_df[final_columns]
+    # MODIFIED: This ensures the export always contains all required columns in the correct order
+    db_df = db_df[REQUIRED_HEADERS]
 
     output = io.BytesIO()
     
@@ -383,7 +369,6 @@ def export_data():
     output.seek(0)
     return send_file(output, mimetype=mimetype, as_attachment=True, download_name=f'contracts_export.{file_extension}')
 
-# MODIFIED: /api/upload function with strict header validation
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -398,7 +383,6 @@ def upload_file():
         return make_response(jsonify({"error": "Invalid file type. Please upload a .xlsx file."}), 400)
 
     try:
-        # --- VALIDATION STEP ---
         df = pd.read_excel(file)
         
         required_headers_set = set(REQUIRED_HEADERS)
@@ -414,8 +398,6 @@ def upload_file():
                 error_message += f" Extra columns found: {', '.join(extra)}."
             return make_response(jsonify({"error": error_message}), 400)
         
-        # --- END OF VALIDATION STEP ---
-
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], EXCEL_FILE)
         file.seek(0) 
         file.save(filepath)
@@ -433,7 +415,6 @@ def upload_file():
 # --- CRUD Operations ---
 @app.route('/api/contracts', methods=['POST'])
 def add_contract():
-    # This function remains the same
     new_data = request.get_json()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -472,7 +453,6 @@ def add_contract():
 
 @app.route('/api/contracts/<int:row_id>', methods=['PUT'])
 def update_contract(row_id):
-    # This function remains the same
     updated_data = request.get_json()
     conn = get_db_connection()
     cursor = conn.cursor()
@@ -505,7 +485,6 @@ def update_contract(row_id):
 
 @app.route('/api/contracts/<int:row_id>', methods=['DELETE'])
 def delete_contract(row_id):
-    # This function remains the same
     conn = get_db_connection()
     cursor = conn.cursor()
     try:
