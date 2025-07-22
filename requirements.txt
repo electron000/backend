@@ -1,6 +1,7 @@
 Flask
 Flask-Cors
-pandas
 openpyxl
-xlsxwriter
+pandas
 python-docx
+reportlab
+xlsxwriter
