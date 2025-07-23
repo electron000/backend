@@ -336,6 +336,80 @@ def add_contract():
         return jsonify({"message": "Contract added"}), 201
     finally: conn.close()
 
+@app.route('/api/contracts/<int:id>', methods=['PUT'])
+def update_contract(id):
+    """Updates an existing contract record identified by its rowid."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # First, ensure the contract exists
+        cursor.execute(f"SELECT rowid FROM {TABLE_NAME} WHERE rowid = ?", (id,))
+        if cursor.fetchone() is None:
+            return jsonify({"error": "Contract not found"}), 404
+
+        updated_data = request.get_json()
+        if not updated_data:
+            return jsonify({"error": "Invalid data provided for update"}), 400
+
+        set_clauses = []
+        params = []
+        for key, value in updated_data.items():
+            sanitized_key = sanitize_column_name(key)
+            # Prevent direct update of SL No or internal ID
+            if sanitized_key not in ['id', sanitize_column_name('SL No')]:
+                set_clauses.append(f'"{sanitized_key}" = ?')
+                params.append(value)
+        
+        if not set_clauses:
+            return jsonify({"error": "No valid fields to update"}), 400
+
+        params.append(id)
+        query = f"UPDATE {TABLE_NAME} SET {', '.join(set_clauses)} WHERE rowid = ?"
+        
+        cursor.execute(query, tuple(params))
+        conn.commit()
+        
+        # Sync changes back to the Excel file
+        export_db_to_excel()
+        return jsonify({"message": f"Contract {id} updated successfully."}), 200
+
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route('/api/contracts/<int:id>', methods=['DELETE'])
+def delete_contract(id):
+    """Deletes a contract record identified by its rowid."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        # First, ensure the contract exists
+        cursor.execute(f"SELECT rowid FROM {TABLE_NAME} WHERE rowid = ?", (id,))
+        if cursor.fetchone() is None:
+            return jsonify({"error": "Contract not found"}), 404
+
+        # Delete the specified row
+        cursor.execute(f"DELETE FROM {TABLE_NAME} WHERE rowid = ?", (id,))
+        
+        # Re-index the 'SL No' for all remaining rows to maintain sequence
+        reindex_sl_no_in_db(cursor)
+        
+        conn.commit()
+        
+        # Sync changes back to the Excel file
+        export_db_to_excel()
+        return jsonify({"message": f"Contract {id} deleted successfully."}), 200
+        
+    except Exception as e:
+        conn.rollback()
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
 @app.route('/api/export', methods=['GET'])
 def data_export():
     conn = get_db_connection()
