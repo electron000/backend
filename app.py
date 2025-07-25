@@ -33,7 +33,7 @@ from reportlab.lib.enums import TA_CENTER
 
 # --- Configuration and Global Variables ---
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app"}})
+CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-key-for-local-development-only')
 DB_FILE = 'contracts.db'
 EXCEL_FILE = 'Contract Details.xlsx'
