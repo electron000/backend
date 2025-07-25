@@ -34,7 +34,7 @@ from reportlab.lib.enums import TA_CENTER
 # --- Configuration and Global Variables ---
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://ongc-contracts.vercel.app"}})
-app.config['SECRET_KEY'] = 'a-strong-and-very-secret-key-that-you-should-change'
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-fallback-key-for-local-development-only')
 DB_FILE = 'contracts.db'
 EXCEL_FILE = 'Contract Details.xlsx'
 TABLE_NAME = 'contracts'
@@ -266,60 +266,6 @@ def admin_required(f):
         return f(*args, **kwargs)
     return decorated
 
-# --- Data Fetching and Filtering Logic ---
-
-def get_filtered_sorted_data(headers, field_types, params):
-    if not headers: return []
-    conn = get_db_connection()
-    sort_field = params.get('sortField', FIXED_START_COL)
-    sort_direction = params.get('sortDirection', 'asc').upper()
-    where_clauses, query_params = [], []
-    filter_field = params.get('filterField')
-    
-    if filter_field:
-        sanitized_filter_field = sanitize_column_name(filter_field)
-        if filter_field in field_types.get('numeric', []):
-            min_range, max_range = params.get('minRange'), params.get('maxRange')
-            if min_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) >= ?'); query_params.append(float(min_range))
-            if max_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) <= ?'); query_params.append(float(max_range))
-        elif filter_field in field_types.get('date', []):
-            from_date, to_date = params.get('fromDate'), params.get('toDate')
-            if from_date: where_clauses.append(f'date("{sanitized_filter_field}") >= date(?)'); query_params.append(from_date)
-            if to_date: where_clauses.append(f'date("{sanitized_filter_field}") <= date(?)'); query_params.append(to_date)
-        else:
-            filter_value = params.get('filterValue')
-            if filter_value: where_clauses.append(f'LOWER("{sanitized_filter_field}") LIKE ?'); query_params.append(f"%{filter_value.lower()}%")
-    
-    where_statement = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
-    sanitized_sort_field = sanitize_column_name(sort_field)
-    order_by_clause = f'ORDER BY CAST("{sanitize_column_name(FIXED_START_COL)}" AS REAL) ASC'
-    if sort_field in field_types.get('numeric', []): order_by_clause = f'ORDER BY CAST("{sanitized_sort_field}" AS REAL) {sort_direction}'
-    elif sort_field in field_types.get('date', []): order_by_clause = f'ORDER BY date("{sanitized_sort_field}") {sort_direction}'
-    elif sort_field in field_types.get('text', []): order_by_clause = f'ORDER BY "{sanitized_sort_field}" {sort_direction}'
-
-    sanitized_headers = [sanitize_column_name(h) for h in headers]
-    select_clause = "SELECT rowid as id, " + ", ".join(f'"{col}"' for col in sanitized_headers)
-    data_query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause}"
-    
-    results = conn.execute(data_query, tuple(query_params)).fetchall()
-    conn.close()
-    
-    sanitized_to_original_map = {sanitize_column_name(h): h for h in headers}
-    contracts = []
-    for row in results:
-        row_dict = dict(row)
-        formatted_row = {'id': row_dict.get('id')}
-        for s_key, value in row_dict.items():
-            if s_key != 'id':
-                original_key = sanitized_to_original_map.get(s_key)
-                if original_key:
-                    formatted_row[original_key] = value
-        contracts.append(formatted_row)
-            
-    return contracts
-
-# --- API Endpoints ---
-
 @app.route('/api/schema', methods=['GET'])
 @admin_required
 def get_schema_endpoint():
@@ -469,20 +415,91 @@ def login():
 @app.route('/api/contracts', methods=['GET'])
 @token_required 
 def get_contracts():
+    """
+    Fetches contract data using efficient, server-side pagination and filtering.
+    """
     headers, field_types = get_current_schema()
-    all_data = get_filtered_sorted_data(headers, field_types, request.args)
-    if 'page' not in request.args:
-        return jsonify(all_data)
-    page, limit = request.args.get('page', 1, type=int), request.args.get('limit', 10, type=int)
-    total_pages = math.ceil(len(all_data) / limit) if all_data else 1
-    paginated_data = all_data[((page - 1) * limit):(page * limit)]
-    return jsonify({
-        "data": paginated_data, 
-        "totalPages": total_pages, 
-        "currentPage": page, 
-        "headers": headers, 
-        "fieldTypes": field_types
-    })
+    if not headers:
+        return jsonify({"data": [], "totalPages": 0, "currentPage": 1, "headers": [], "fieldTypes": {}})
+
+    params = request.args
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # --- Build Filter Logic ---
+    where_clauses, query_params = [], []
+    filter_field = params.get('filterField')
+    if filter_field:
+        sanitized_filter_field = sanitize_column_name(filter_field)
+        if filter_field in field_types.get('numeric', []):
+            min_range, max_range = params.get('minRange'), params.get('maxRange')
+            if min_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) >= ?'); query_params.append(float(min_range))
+            if max_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) <= ?'); query_params.append(float(max_range))
+        elif filter_field in field_types.get('date', []):
+            from_date, to_date = params.get('fromDate'), params.get('toDate')
+            if from_date: where_clauses.append(f'date("{sanitized_filter_field}") >= date(?)'); query_params.append(from_date)
+            if to_date: where_clauses.append(f'date("{sanitized_filter_field}") <= date(?)'); query_params.append(to_date)
+        else:
+            filter_value = params.get('filterValue')
+            if filter_value: where_clauses.append(f'LOWER("{sanitized_filter_field}") LIKE ?'); query_params.append(f"%{filter_value.lower()}%")
+    
+    where_statement = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    # --- Get Total Records for Pagination ---
+    count_query = f"SELECT COUNT(*) FROM {TABLE_NAME} {where_statement}"
+    total_records = cursor.execute(count_query, tuple(query_params)).fetchone()[0]
+
+    # --- Build Sort Logic ---
+    sort_field = params.get('sortField', FIXED_START_COL)
+    sort_direction = params.get('sortDirection', 'asc').upper()
+    sanitized_sort_field = sanitize_column_name(sort_field)
+    order_by_clause = f'ORDER BY CAST("{sanitize_column_name(FIXED_START_COL)}" AS REAL) ASC' # Default
+    if sort_field in field_types.get('numeric', []): order_by_clause = f'ORDER BY CAST("{sanitized_sort_field}" AS REAL) {sort_direction}'
+    elif sort_field in field_types.get('date', []): order_by_clause = f'ORDER BY date("{sanitized_sort_field}") {sort_direction}'
+    elif sort_field in field_types.get('text', []): order_by_clause = f'ORDER BY "{sanitized_sort_field}" {sort_direction}'
+
+    # --- Build Final Query with Pagination ---
+    sanitized_headers = [sanitize_column_name(h) for h in headers]
+    select_clause = "SELECT rowid as id, " + ", ".join(f'"{col}"' for col in sanitized_headers)
+    
+    if 'page' not in params: # If no page is requested, return all data
+        data_query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause}"
+        results = cursor.execute(data_query, tuple(query_params)).fetchall()
+    else: # Otherwise, return a paginated slice
+        page, limit = params.get('page', 1, type=int), params.get('limit', 10, type=int)
+        offset = (page - 1) * limit
+        data_query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause} LIMIT ? OFFSET ?"
+        final_params = tuple(query_params) + (limit, offset)
+        results = cursor.execute(data_query, final_params).fetchall()
+
+    conn.close()
+
+    # --- Format and Return Response ---
+    sanitized_to_original_map = {sanitize_column_name(h): h for h in headers}
+    contracts = []
+    for row in results:
+        row_dict = dict(row)
+        formatted_row = {'id': row_dict.get('id')}
+        for s_key, value in row_dict.items():
+            if s_key != 'id':
+                original_key = sanitized_to_original_map.get(s_key)
+                if original_key:
+                    formatted_row[original_key] = value
+        contracts.append(formatted_row)
+    
+    if 'page' not in params:
+        return jsonify(contracts)
+    else:
+        page = params.get('page', 1, type=int)
+        limit = params.get('limit', 10, type=int)
+        total_pages = math.ceil(total_records / limit) if total_records > 0 else 1
+        return jsonify({
+            "data": contracts, 
+            "totalPages": total_pages, 
+            "currentPage": page, 
+            "headers": headers, 
+            "fieldTypes": field_types
+        })
 
 @app.route('/api/contracts', methods=['POST'])
 @admin_required
@@ -556,119 +573,191 @@ def upload_file():
         return jsonify({"message": "File uploaded and database re-initialized successfully."}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+def _generate_csv(db_df):
+    """Generates a CSV file in memory."""
+    output = io.BytesIO()
+    db_df.to_csv(output, index=False)
+    mimetype = 'text/csv'
+    file_extension = 'csv'
+    return output, mimetype, file_extension
+
+def _generate_docx(db_df, file_name_from_req):
+    """Generates a DOCX file in memory."""
+    output = io.BytesIO()
+    document = Document()
+    section = document.sections[0]
+    section.orientation = WD_ORIENT.LANDSCAPE
+    section.page_width, section.page_height = section.page_height, section.page_width
+    if file_name_from_req: document.add_heading(file_name_from_req, 0)
+    table = document.add_table(rows=1, cols=len(db_df.columns))
+    table.style = 'Table Grid'
+    hdr_cells = table.rows[0].cells
+    for i, col_name in enumerate(db_df.columns):
+        hdr_cells[i].paragraphs[0].add_run(str(col_name)).bold = True
+    for _, row in db_df.iterrows():
+        row_cells = table.add_row().cells
+        for i, cell_value in enumerate(row):
+            row_cells[i].text = str(cell_value)
+    document.save(output)
+    mimetype = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    file_extension = 'docx'
+    return output, mimetype, file_extension
+
+def _generate_pdf(db_df, file_name_from_req):
+    """Generates a PDF file in memory."""
+    output = io.BytesIO()
+    num_cols = len(db_df.columns)
+    pagesize = landscape(A2) if num_cols > 25 else landscape(A3) if num_cols > 15 else landscape(A4)
+    doc = SimpleDocTemplate(output, pagesize=pagesize, rightMargin=20, leftMargin=20, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+    font_scale = max(0.5, 1 - (num_cols / 40.0))
+    base_font_size = 8
+    scaled_font_size = base_font_size * font_scale
+    header_style = ParagraphStyle('Header', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=scaled_font_size, textColor=colors.white, alignment=TA_CENTER, leading=scaled_font_size * 1.2)
+    body_style = ParagraphStyle('Body', parent=styles['Normal'], fontName='Helvetica', fontSize=scaled_font_size - 1, alignment=TA_CENTER, leading=scaled_font_size * 1.2)
+    
+    elements = []
+    available_width = doc.width
+    col_widths = []
+    for col in db_df.columns:
+        header_len = len(str(col))
+        max_data_len = db_df[col].astype(str).str.len().max()
+        if pd.isna(max_data_len): max_data_len = 0
+        col_width = max(header_len, int(max_data_len)) * scaled_font_size * 0.6
+        col_widths.append(max(40, min(col_width, available_width / num_cols * 2.0 if num_cols > 0 else available_width)))
+    
+    total_width = sum(col_widths)
+    if total_width > 0:
+        col_widths = [w * available_width / total_width for w in col_widths]
+    
+    header_row = [Paragraph(str(h).replace('(₹)', '(INR)'), header_style) for h in db_df.columns]
+    data_rows = [header_row]
+    for _, row in db_df.iterrows():
+        data_rows.append([Paragraph(str(item), body_style) for item in row])
+    
+    table = Table(data_rows, colWidths=col_widths, repeatRows=1)
+    table.setStyle(TableStyle([
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9B1C1C')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.black),
+        ('ALIGN', (0,0), (-1,-1), 'CENTER'),
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 8),
+        ('TOPPADDING', (0,0), (-1,0), 8),
+        ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
+        ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.HexColor('#F0F0F0'), colors.white])
+    ]))
+    elements.append(table)
+    
+    def header_footer(canvas, doc):
+        canvas.saveState()
+        if file_name_from_req:
+            canvas.setFont('Helvetica-Bold', 12)
+            canvas.drawCentredString(doc.width / 2.0 + doc.leftMargin, doc.height + doc.topMargin - 25, file_name_from_req)
+        canvas.setFont('Helvetica', 8)
+        canvas.setFillColor(colors.grey)
+        generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        canvas.drawString(doc.leftMargin, doc.bottomMargin - 15, f"Generated on: {generation_time}")
+        canvas.drawRightString(doc.width + doc.leftMargin, doc.bottomMargin - 15, f"Page {doc.page}")
+        canvas.restoreState()
+    
+    doc.build(elements, onFirstPage=header_footer, onLaterPages=header_footer)
+    mimetype = 'application/pdf'
+    file_extension = 'pdf'
+    return output, mimetype, file_extension
+
+def _generate_xlsx(db_df):
+    """Generates an XLSX file in memory."""
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        db_df.to_excel(writer, index=False, sheet_name='Contracts')
+        workbook, worksheet = writer.book, writer.sheets['Contracts']
+        header_format = workbook.add_format({'bold': True, 'fg_color': '#D7E4BC', 'border': 1})
+        for col_num, value in enumerate(db_df.columns.values):
+            worksheet.write(0, col_num, value, header_format)
+            column_len = max((db_df[value].astype(str).str.len().max() or 0), len(str(value))) + 2
+            worksheet.set_column(col_num, col_num, column_len)
+        worksheet.freeze_panes(1, 0)
+    mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    file_extension = 'xlsx'
+    return output, mimetype, file_extension
 
 @app.route('/api/export', methods=['GET'])
 @token_required
 def data_export():
+    """Main export endpoint that builds a query and routes to the correct file generation helper."""
     headers, field_types = get_current_schema()
-    filtered_data = get_filtered_sorted_data(headers, field_types, request.args)
+    if not headers:
+        return jsonify({"error": "No schema defined, cannot export."}), 404
 
-    if not filtered_data:
+    params = request.args
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    # --- Build Filter Logic (copied from get_contracts) ---
+    where_clauses, query_params = [], []
+    filter_field = params.get('filterField')
+    if filter_field:
+        sanitized_filter_field = sanitize_column_name(filter_field)
+        if filter_field in field_types.get('numeric', []):
+            min_range, max_range = params.get('minRange'), params.get('maxRange')
+            if min_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) >= ?'); query_params.append(float(min_range))
+            if max_range: where_clauses.append(f'CAST("{sanitized_filter_field}" AS REAL) <= ?'); query_params.append(float(max_range))
+        elif filter_field in field_types.get('date', []):
+            from_date, to_date = params.get('fromDate'), params.get('toDate')
+            if from_date: where_clauses.append(f'date("{sanitized_filter_field}") >= date(?)'); query_params.append(from_date)
+            if to_date: where_clauses.append(f'date("{sanitized_filter_field}") <= date(?)'); query_params.append(to_date)
+        else:
+            filter_value = params.get('filterValue')
+            if filter_value: where_clauses.append(f'LOWER("{sanitized_filter_field}") LIKE ?'); query_params.append(f"%{filter_value.lower()}%")
+    
+    where_statement = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+
+    # --- Build Sort Logic (copied from get_contracts) ---
+    sort_field = params.get('sortField', FIXED_START_COL)
+    sort_direction = params.get('sortDirection', 'asc').upper()
+    sanitized_sort_field = sanitize_column_name(sort_field)
+    order_by_clause = f'ORDER BY CAST("{sanitize_column_name(FIXED_START_COL)}" AS REAL) ASC' # Default
+    if sort_field in field_types.get('numeric', []): order_by_clause = f'ORDER BY CAST("{sanitized_sort_field}" AS REAL) {sort_direction}'
+    elif sort_field in field_types.get('date', []): order_by_clause = f'ORDER BY date("{sanitized_sort_field}") {sort_direction}'
+    elif sort_field in field_types.get('text', []): order_by_clause = f'ORDER BY "{sanitized_sort_field}" {sort_direction}'
+
+    # --- Fetch Data ---
+    sanitized_headers = [sanitize_column_name(h) for h in headers]
+    select_clause = "SELECT " + ", ".join(f'"{col}"' for col in sanitized_headers)
+    data_query = f"{select_clause} FROM {TABLE_NAME} {where_statement} {order_by_clause}"
+    results = cursor.execute(data_query, tuple(query_params)).fetchall()
+    conn.close()
+
+    if not results:
         return jsonify({"error": "No data to export for the current filters."}), 404
 
-    db_df = pd.DataFrame(filtered_data)
+    # --- Format Data and Generate File ---
+    db_df = pd.DataFrame(results, columns=sanitized_headers)
+    
+    sanitized_to_original_map = {s_h: o_h for s_h, o_h in zip(sanitized_headers, headers)}
+    db_df.rename(columns=sanitized_to_original_map, inplace=True)
     
     selected_fields_str = request.args.get('selectedFields', '')
     if selected_fields_str:
         selected_fields = selected_fields_str.split(',')
         columns_to_keep = [col for col in selected_fields if col in db_df.columns]
-        if 'id' in db_df.columns and 'id' not in columns_to_keep:
-             columns_to_keep.insert(0, 'id')
         db_df = db_df[columns_to_keep]
 
-    if 'id' in db_df.columns:
-        db_df = db_df.drop(columns=['id'])
-
-    output = io.BytesIO()
     format_type = request.args.get('format', 'xlsx')
     file_name_from_req = request.args.get('fileName')
     download_name_str = (file_name_from_req or 'contracts_export').replace(' ', '_')
     
     if format_type == 'csv':
-        db_df.to_csv(output, index=False)
-        mimetype, file_extension = 'text/csv', 'csv'
-
+        output, mimetype, file_extension = _generate_csv(db_df)
     elif format_type == 'docx':
-        document = Document()
-        section = document.sections[0]
-        section.orientation = WD_ORIENT.LANDSCAPE
-        section.page_width, section.page_height = section.page_height, section.page_width
-        if file_name_from_req: document.add_heading(file_name_from_req, 0)
-        table = document.add_table(rows=1, cols=len(db_df.columns))
-        table.style = 'Table Grid'
-        hdr_cells = table.rows[0].cells
-        for i, col_name in enumerate(db_df.columns):
-            hdr_cells[i].paragraphs[0].add_run(str(col_name)).bold = True
-        for _, row in db_df.iterrows():
-            row_cells = table.add_row().cells
-            for i, cell_value in enumerate(row):
-                row_cells[i].text = str(cell_value)
-        document.save(output)
-        mimetype, file_extension = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'docx'
-
+        output, mimetype, file_extension = _generate_docx(db_df, file_name_from_req)
     elif format_type == 'pdf':
-        num_cols = len(db_df.columns)
-        pagesize = landscape(A2) if num_cols > 25 else landscape(A3) if num_cols > 15 else landscape(A4)
-        doc = SimpleDocTemplate(output, pagesize=pagesize, rightMargin=20, leftMargin=20, topMargin=40, bottomMargin=40)
-        styles = getSampleStyleSheet()
-        font_scale = max(0.5, 1 - (num_cols / 40.0))
-        base_font_size = 8
-        scaled_font_size = base_font_size * font_scale
-        header_style = ParagraphStyle('Header', parent=styles['Normal'], fontName='Helvetica-Bold', fontSize=scaled_font_size, textColor=colors.white, alignment=TA_CENTER, leading=scaled_font_size * 1.2)
-        body_style = ParagraphStyle('Body', parent=styles['Normal'], fontName='Helvetica', fontSize=scaled_font_size - 1, alignment=TA_CENTER, leading=scaled_font_size * 1.2)
-        elements = []
-        available_width = doc.width
-        col_widths = []
-        for col in db_df.columns:
-            header_len = len(str(col))
-            max_data_len = db_df[col].astype(str).str.len().max()
-            if pd.isna(max_data_len): max_data_len = 0
-            col_width = max(header_len, int(max_data_len)) * scaled_font_size * 0.6
-            col_widths.append(max(40, min(col_width, available_width / num_cols * 2.0 if num_cols > 0 else available_width)))
-        total_width = sum(col_widths)
-        if total_width > 0:
-            col_widths = [w * available_width / total_width for w in col_widths]
-        header_row = [Paragraph(str(h).replace('(₹)', '(INR)'), header_style) for h in db_df.columns]
-        data_rows = [header_row]
-        for _, row in db_df.iterrows():
-            data_rows.append([Paragraph(str(item), body_style) for item in row])
-        table = Table(data_rows, colWidths=col_widths, repeatRows=1)
-        table.setStyle(TableStyle([
-            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#9B1C1C')),
-            ('TEXTCOLOR', (0,0), (-1,0), colors.black),
-            ('ALIGN', (0,0), (-1,-1), 'CENTER'),
-            ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
-            ('BOTTOMPADDING', (0,0), (-1,0), 8),
-            ('TOPPADDING', (0,0), (-1,0), 8),
-            ('GRID', (0,0), (-1,-1), 0.5, colors.grey),
-            ('ROWBACKGROUNDS', (0,1), (-1,-1), [colors.HexColor('#F0F0F0'), colors.white])
-        ]))
-        elements.append(table)
-        def header_footer(canvas, doc):
-            canvas.saveState()
-            if file_name_from_req:
-                canvas.setFont('Helvetica-Bold', 12)
-                canvas.drawCentredString(doc.width / 2.0 + doc.leftMargin, doc.height + doc.topMargin - 25, file_name_from_req)
-            canvas.setFont('Helvetica', 8)
-            canvas.setFillColor(colors.grey)
-            generation_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            canvas.drawString(doc.leftMargin, doc.bottomMargin - 15, f"Generated on: {generation_time}")
-            canvas.drawRightString(doc.width + doc.leftMargin, doc.bottomMargin - 15, f"Page {doc.page}")
-            canvas.restoreState()
-        doc.build(elements, onFirstPage=header_footer, onLaterPages=header_footer)
-        mimetype, file_extension = 'application/pdf', 'pdf'
-    else:
-        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-            db_df.to_excel(writer, index=False, sheet_name='Contracts')
-            workbook, worksheet = writer.book, writer.sheets['Contracts']
-            header_format = workbook.add_format({'bold': True, 'fg_color': '#D7E4BC', 'border': 1})
-            for col_num, value in enumerate(db_df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-                column_len = max((db_df[value].astype(str).str.len().max() or 0), len(str(value))) + 2
-                worksheet.set_column(col_num, col_num, column_len)
-            worksheet.freeze_panes(1, 0)
-        mimetype, file_extension = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'xlsx'
+        output, mimetype, file_extension = _generate_pdf(db_df, file_name_from_req)
+    else: # Default to xlsx
+        output, mimetype, file_extension = _generate_xlsx(db_df)
+    
     output.seek(0)
     return send_file(output, mimetype=mimetype, as_attachment=True, download_name=f'{download_name_str}.{file_extension}')
 
@@ -691,4 +780,4 @@ if __name__ == '__main__':
     if not os.path.exists(UPLOAD_FOLDER):
         os.makedirs(UPLOAD_FOLDER)
     setup_database_and_schema()
-    app.run(host='0.0.0.0', port=5001, debug=True)
+    app.run(host='0.0.0.0', port=5001)
