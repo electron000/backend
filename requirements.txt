@@ -1,0 +1,9 @@
+Flask
+Flask-Cors
+Werkzeug
+PyJWT
+pandas
+python-docx
+reportlab
+openpyxl
+gunicorn
