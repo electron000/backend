@@ -28,7 +28,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
+CORS(app, resources={r"/api/*": {"origins": "*"}})
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 DB_FILE = os.environ.get('DATABASE_FILE')
