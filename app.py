@@ -31,8 +31,6 @@ app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
-print(f"DEBUG: SECRET_KEY loaded: {app.config['SECRET_KEY']}")
-print(f"DEBUG: SECRET_KEY type: {type(app.config['SECRET_KEY'])}")
 ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD')
 USER_DEFAULT_PASSWORD = os.environ.get('USER_DEFAULT_PASSWORD')
 DB_FILE = os.environ.get('DATABASE_FILE','mainsys.db')
