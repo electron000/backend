@@ -30,7 +30,7 @@ from reportlab.lib.enums import TA_CENTER
 app = Flask(__name__)
 CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'a-very-secure-fallback-secret-key-for-dev')
 DB_FILE = os.environ.get('DATABASE_FILE', 'contracts.db')
 EXCEL_FILE = os.environ.get('EXCEL_FILE', 'Contract Details.xlsx')
 ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD', '223010007007')
