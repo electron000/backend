@@ -28,7 +28,7 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
+CORS(app, resources={r"/api/*": {"origins": "http://mainsys.vercel.app/"}})
 
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
 ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD')
