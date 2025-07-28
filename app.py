@@ -28,13 +28,13 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
+CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY')
-ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD')
-USER_DEFAULT_PASSWORD = os.environ.get('USER_DEFAULT_PASSWORD')
-DB_FILE = os.environ.get('DATABASE_FILE')
-EXCEL_FILE = os.environ.get('EXCEL_FILE')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','X7a9LkPqT2vRmZyW8oJcBfGdHnQxU3tVwE5sKpLzY4rN6jCmXqT9vW8oJcBfGdHnQxU')
+ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD','332010007008')
+USER_DEFAULT_PASSWORD = os.environ.get('USER_DEFAULT_PASSWORD','12345')
+DB_FILE = os.environ.get('DATABASE_FILE','contracts.db')
+EXCEL_FILE = os.environ.get('EXCEL_FILE','contracts.xlsx')
 TABLE_NAME = 'contracts'
 UPLOAD_FOLDER = '.'
 BACKUP_FOLDER = os.path.join(UPLOAD_FOLDER, 'backups')
