@@ -28,12 +28,12 @@ from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER
 
 app = Flask(__name__)
-CORS(app, resources={r"/api/*": {"origins": "http://localhost:5173"}})
+CORS(app, resources={r"/api/*": {"origins": "https://mainsys.vercel.app"}})
 
-app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','X7a9LkPqT2vRmZyW8oJcBfGdHnQxU3tVwE5sKpLzY4rN6jCmXqT9vW8oJcBfGdHnQxU')
-ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD','332010007008')
-USER_DEFAULT_PASSWORD = os.environ.get('USER_DEFAULT_PASSWORD','12345')
-DB_FILE = os.environ.get('DATABASE_FILE','contracts.db')
+app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY','X7a9LkPqT9QvRmZyW8oJfGdHnQxU3tVwE5sKpLzY4rN6jCmXqT9vW8oJcBfGdHnQxU')
+ADMIN_DEFAULT_PASSWORD = os.environ.get('ADMIN_DEFAULT_PASSWORD','223010007007@Infocom')
+USER_DEFAULT_PASSWORD = os.environ.get('USER_DEFAULT_PASSWORD','785640@Infocom')
+DB_FILE = os.environ.get('DATABASE_FILE','contract.db')
 EXCEL_FILE = os.environ.get('EXCEL_FILE','contracts.xlsx')
 TABLE_NAME = 'contracts'
 UPLOAD_FOLDER = '.'
@@ -531,7 +531,6 @@ def delete_contract(row_id):
     export_db_to_excel()
     return jsonify({"message": f"Contract {row_id} deleted successfully."}), 200
 
-# --- THIS IS YOUR REVERT ENDPOINT ---
 @app.route('/api/revert', methods=['POST'])
 @admin_required
 def revert_to_last_backup():
@@ -558,7 +557,6 @@ def revert_to_last_backup():
         logging.error(f"Error during revert operation: {e}")
         return jsonify({"error": str(e)}), 500
 
-# --- THIS IS YOUR UPDATED UPLOAD ENDPOINT ---
 @app.route('/api/upload', methods=['POST'])
 @admin_required
 def upload_file():
@@ -662,20 +660,15 @@ def _generate_xlsx(db_df):
         db_df.to_excel(writer, index=False, sheet_name='Contracts')
         workbook = writer.book
         worksheet = writer.sheets['Contracts']
-        
-        # --- THIS IS THE MODIFICATION ---
-        # Create a bold header format
+    
         header_format = workbook.add_format({'bold': True, 'fg_color': '#D7E4BC', 'border': 1, 'align': 'center', 'valign': 'vcenter'})
-        # Create a center-aligned format for data cells
         cell_format = workbook.add_format({'align': 'center', 'valign': 'vcenter', 'border': 1})
-        
-        # Write headers and set column widths
+
         for col_num, value in enumerate(db_df.columns.values):
             worksheet.write(0, col_num, value, header_format)
             column_len = max((db_df[value].astype(str).str.len().max() or 0), len(str(value))) + 2
             worksheet.set_column(col_num, col_num, column_len)
             
-        # Write data rows with the center-aligned format
         for row_num, row_data in enumerate(db_df.values):
             for col_num, cell_data in enumerate(row_data):
                 worksheet.write(row_num + 1, col_num, cell_data, cell_format)
